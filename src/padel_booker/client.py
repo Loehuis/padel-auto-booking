@@ -34,11 +34,8 @@ class FlowStuckError(BookingError):
 @dataclass
 class Slot:
     court: int
-    date_iso: str
     date_us: str
-    weekday: str
     begin: str
-    end: str
 
 
 class EbusyClient:
@@ -184,11 +181,8 @@ class EbusyClient:
 
             matches[court] = Slot(
                 court=court,
-                date_iso=cell.get("data-date-iso", target_date.isoformat()),
                 date_us=cell.get("data-date", date_str),
-                weekday=cell.get("data-weekday", ""),
                 begin=cell.get("data-major-begin", target_str),
-                end=cell.get("data-major-end", target_str),
             )
 
         for court in preferred_courts:
@@ -213,7 +207,7 @@ class EbusyClient:
         (or FlowStuckError) on failure.
         """
         from_time = slot.begin
-        end_dt = _add_minutes(from_time, duration_minutes)
+        end_dt = add_minutes(from_time, duration_minutes)
 
         courts_param = ",".join(str(c) for c in all_courts)
         resp = self.session.get(
@@ -308,7 +302,7 @@ def _ordered_candidates(discovered: list[str]) -> list[str]:
     return ordered
 
 
-def _add_minutes(hhmm: str, minutes: int) -> str:
+def add_minutes(hhmm: str, minutes: int) -> str:
     match = re.match(r"^(\d{1,2}):(\d{2})$", hhmm)
     if not match:
         raise ValueError(f"Unerwartetes Zeitformat: {hhmm}")

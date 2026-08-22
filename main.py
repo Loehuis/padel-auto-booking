@@ -7,7 +7,7 @@ import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from src.padel_booker.client import BookingError, EbusyClient, FlowStuckError
+from src.padel_booker.client import BookingError, EbusyClient, FlowStuckError, add_minutes
 from src.padel_booker.config import load_config
 from src.padel_booker.scheduler import BOOKING_HORIZON_DAYS, run_forever
 
@@ -74,7 +74,8 @@ def cmd_find_slot(args: argparse.Namespace) -> int:
         )
         return 1
 
-    print(f"Buchbarer Slot gefunden: Court {slot.court}, {slot.date_us} {slot.begin}-{slot.end}")
+    requested_end = add_minutes(slot.begin, cfg.target.duration_minutes)
+    print(f"Buchbarer Slot gefunden: Court {slot.court}, {slot.date_us} {slot.begin}-{requested_end}")
     return 0
 
 
@@ -102,7 +103,8 @@ def cmd_test_booking(args: argparse.Namespace) -> int:
         print("Kein passender freier Slot gefunden - Test kann jetzt nicht laufen.")
         return 1
 
-    print(f"Gefundener Slot: Court {slot.court}, {slot.date_us} {slot.begin}-{slot.end}")
+    requested_end = add_minutes(slot.begin, cfg.target.duration_minutes)
+    print(f"Gefundener Slot: Court {slot.court}, {slot.date_us} {slot.begin}-{requested_end}")
 
     if not args.confirm:
         print(
@@ -113,7 +115,7 @@ def cmd_test_booking(args: argparse.Namespace) -> int:
         return 0
 
     answer = input(
-        f"Slot Court {slot.court}, {slot.date_us} {slot.begin}-{slot.end} JETZT WIRKLICH "
+        f"Slot Court {slot.court}, {slot.date_us} {slot.begin}-{requested_end} JETZT WIRKLICH "
         "buchen? Tippe 'ja' zum Bestaetigen: "
     )
     if answer.strip().lower() != "ja":

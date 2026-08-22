@@ -5,7 +5,7 @@ import time as time_module
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .client import BookingError, EbusyClient, FlowStuckError, LoginError
+from .client import BookingError, EbusyClient, FlowStuckError, LoginError, add_minutes
 from .config import AppConfig, load_config
 from .notify import notify
 
@@ -114,12 +114,15 @@ def attempt_booking(client: EbusyClient, cfg: AppConfig, target_date: datetime, 
         logger.debug("Slot noch nicht buchbar (%s).", run_key)
         return False
 
+    requested_end = add_minutes(slot.begin, cfg.target.duration_minutes)
     logger.info(
-        "Freier Slot gefunden: Court %s, %s %s-%s. Versuche zu buchen...",
+        "Freier Slot gefunden: Court %s, %s %s-%s (angefragte Dauer: %d Min). "
+        "Versuche zu buchen...",
         slot.court,
         slot.date_us,
         slot.begin,
-        slot.end,
+        requested_end,
+        cfg.target.duration_minutes,
     )
 
     try:
@@ -134,7 +137,7 @@ def attempt_booking(client: EbusyClient, cfg: AppConfig, target_date: datetime, 
             cfg.notification,
             cfg.smtp,
             "Padel-Buchung: Flow-Logik muss geprueft werden",
-            f"{exc}\n\nSlot: Court {slot.court}, {slot.date_us} {slot.begin}-{slot.end}\n"
+            f"{exc}\n\nSlot: Court {slot.court}, {slot.date_us} {slot.begin}-{requested_end}\n"
             "Der Buchungsdialog der Seite hat sich vermutlich geaendert. "
             "Bitte manuell im Browser buchen und das Skript anpassen.",
         )
@@ -146,7 +149,7 @@ def attempt_booking(client: EbusyClient, cfg: AppConfig, target_date: datetime, 
             cfg.smtp,
             "Padel-Buchung: fehlgeschlagen",
             f"Grund: {exc.reason}\nSlot: Court {slot.court}, {slot.date_us} "
-            f"{slot.begin}-{slot.end}",
+            f"{slot.begin}-{requested_end}",
         )
         return False
 
@@ -156,7 +159,7 @@ def attempt_booking(client: EbusyClient, cfg: AppConfig, target_date: datetime, 
         cfg.notification,
         cfg.smtp,
         "Padel-Buchung: Erfolg!",
-        f"Court {slot.court} am {slot.date_us}, {slot.begin}-{slot.end} Uhr gebucht.\n{result}",
+        f"Court {slot.court} am {slot.date_us}, {slot.begin}-{requested_end} Uhr gebucht.\n{result}",
     )
     return True
 
