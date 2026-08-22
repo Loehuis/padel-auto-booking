@@ -1,0 +1,24 @@
+name: Deploy to Oracle Cloud VM
+
+# Nur Deployment/Sync des Codes auf die dauerhaft laufende VM - NICHT die
+# zeitkritische Buchung selbst (die läuft als systemd-Dienst direkt auf der
+# VM, siehe deploy/padel-booking.service). GitHub Actions Cron ist für den
+# eigentlichen Buchungszeitpunkt zu ungenau.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy per SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            cd ${{ secrets.VM_APP_DIR }}
+            ./deploy/redeploy.sh

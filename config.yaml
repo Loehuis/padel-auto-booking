@@ -1,0 +1,43 @@
+# Wöchentlich anpassbare Zielkonfiguration.
+# Änderungen wirken nach einem Neustart des Dienstes (siehe README:
+# "Ziel-Slot wöchentlich ändern").
+
+target:
+  # Wochentag, an dem der jeweils neu freigeschaltete Tag (heute + 7 Tage)
+  # gebucht werden soll. Werte: monday..sunday
+  weekday: saturday
+  # Gewünschte Startzeit (HH:MM), muss einem "data-major-begin" Slot-Raster
+  # der Seite entsprechen (i.d.R. volle/halbe Stunden).
+  time: "10:00"
+  # Buchungsdauer in Minuten (Seiten-Limit: max. 90).
+  duration_minutes: 90
+  # Bevorzugte Court-Nummern in Prioritäts-Reihenfolge. Das Skript nimmt
+  # den ersten verfügbaren aus dieser Liste.
+  courts: [2, 1]
+
+search_window:
+  # Der Poller läuft NUR innerhalb dieses Zeitfensters aggressiv (siehe
+  # polling.interval_seconds), und zwar am selben Wochentag wie "target.weekday"
+  # (weil 7 Tage im Voraus = gleicher Wochentag). Außerhalb des Fensters
+  # prüft das Skript nur träge, ob das Fenster begonnen hat.
+  #
+  # Setze das Fenster großzügig um die vermutete Freischaltzeit herum, da
+  # der genaue Zeitpunkt laut Anlage unregelmäßig ist.
+  start_time: "07:55"
+  end_time: "09:30"
+
+polling:
+  # Abfrageintervall INNERHALB des search_window (Sekunden).
+  interval_seconds: 3
+  # Prüfintervall AUSSERHALB des search_window, ob das Fenster begonnen hat.
+  idle_check_seconds: 30
+
+notification:
+  # E-Mail-Versand ist optional. Bei false wird nur geloggt (kostenlos,
+  # kein externer Dienst nötig). Bei true zusätzlich SMTP-Zugangsdaten
+  # in .env eintragen (z.B. bestehender GMX/Gmail-Account mit App-Passwort).
+  email_enabled: false
+  email_to: ""
+
+# Ordner für internen Zustand (verhindert Doppel-Buchungsversuche pro Woche).
+state_dir: "~/.padel-booker"

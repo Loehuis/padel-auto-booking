@@ -1,0 +1,22 @@
+[Unit]
+Description=Padel Auto-Booking (bsbb.ebusy.de)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Wird von install.sh auf den echten Deploy-Pfad/Benutzer angepasst.
+User=__APP_USER__
+WorkingDirectory=__APP_DIR__
+ExecStart=__APP_DIR__/.venv/bin/python __APP_DIR__/main.py run
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Kleine Härtung: der Dienst braucht keine besonderen Rechte.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+# Secrets - niemals committen
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+
+# Laufzeit-Zustand / Logs
+.padel-booker/
+logs/
+*.log
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
