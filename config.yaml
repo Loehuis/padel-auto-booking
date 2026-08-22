@@ -1,6 +1,8 @@
 # Wöchentlich anpassbare Zielkonfiguration.
-# Änderungen wirken nach einem Neustart des Dienstes (siehe README:
-# "Ziel-Slot wöchentlich ändern").
+# Kann per SSH direkt bearbeitet werden, oder über die Web-Oberfläche
+# (main.py serve-ui, siehe README). Änderungen wirken automatisch, ohne
+# Neustart des Dienstes - der laufende Scheduler liest diese Datei bei
+# jedem Durchlauf neu ein.
 
 target:
   # Wochentag, an dem der jeweils neu freigeschaltete Tag (heute + 7 Tage)
