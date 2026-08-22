@@ -84,39 +84,58 @@ class EbusyClient:
             self._csrf_param = param
 
     def login(self) -> None:
-        resp = self.session.get(self._url("/login"), timeout=15)
-        resp.raise_for_status()
-        self._read_csrf_from_html(resp.text)
+        # Login is not a dedicated page - it's an AJAX modal on the home
+        # page, and the CSRF meta tags live there, not on any /login GET.
+        home_html = self._fetch_home()
+        self._read_csrf_from_html(home_html)
 
         if not self._csrf_token:
-            raise LoginError("Kein CSRF-Token auf der Login-Seite gefunden.")
+            raise LoginError("Kein CSRF-Token auf der Startseite gefunden.")
 
         data = {
             "username": self.username,
             "password": self.password,
             self._csrf_param: self._csrf_token,
         }
+        headers = {
+            self._csrf_header: self._csrf_token,
+            "X-Requested-With": "XMLHttpRequest",
+            "X-Ajax-Call": "true",
+        }
         resp = self.session.post(
-            self._url("/login"), data=data, timeout=15, allow_redirects=True
+            self._url("/login"), data=data, headers=headers, timeout=15
         )
         resp.raise_for_status()
 
-        if "/login" in resp.url and (
-            "error" in resp.url or self._looks_like_login_form(resp.text)
-        ):
+        # The AJAX endpoint answers 200 with a small fragment either way -
+        # no redirect to key success off of - so verify by re-checking the
+        # actual session state afterwards.
+        home_after = self._fetch_home()
+        if not self._is_authenticated(home_after):
+            logger.debug(
+                "Login-Statuscheck fehlgeschlagen, POST-Antwort: status=%s len=%d. "
+                "Home-HTML-Anfang: %.300s",
+                resp.status_code,
+                len(resp.text),
+                home_after,
+            )
             raise LoginError(
-                "Login fehlgeschlagen (wurde zurueck auf die Login-Seite geleitet). "
-                "Bitte EBUSY_USERNAME/EBUSY_PASSWORD pruefen."
+                "Login fehlgeschlagen (Session nach dem Login-Request weiterhin "
+                "nicht authentifiziert). Bitte EBUSY_USERNAME/EBUSY_PASSWORD pruefen. "
+                "Mit --verbose ausfuehren fuer einen Diagnose-Ausschnitt."
             )
 
-        # After a successful login, a fresh page carries a (possibly new)
-        # csrf token for the rest of the session.
-        self._read_csrf_from_html(resp.text)
         logger.info("Login erfolgreich (%s)", self.username)
 
+    def _fetch_home(self) -> str:
+        resp = self.session.get(self._url("/"), timeout=15)
+        resp.raise_for_status()
+        self._read_csrf_from_html(resp.text)
+        return resp.text
+
     @staticmethod
-    def _looks_like_login_form(html: str) -> bool:
-        return 'name="password"' in html and 'name="username"' in html
+    def _is_authenticated(home_html: str) -> bool:
+        return "/logout" in home_html
 
     def _auth_headers(self) -> dict[str, str]:
         if not self._csrf_token:
@@ -124,10 +143,7 @@ class EbusyClient:
         return {self._csrf_header: self._csrf_token}
 
     def ensure_logged_in(self) -> None:
-        resp = self.session.get(
-            self._url("/user/my-bookings"), timeout=15, allow_redirects=True
-        )
-        if "/login" in resp.url:
+        if not self._is_authenticated(self._fetch_home()):
             self.login()
 
     # ------------------------------------------------------------------ #
