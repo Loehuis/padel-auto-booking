@@ -3,3 +3,7 @@ beautifulsoup4>=4.12,<5
 PyYAML>=6.0,<7
 python-dotenv>=1.0,<2
 tzdata>=2024.1
+fastapi>=0.110,<1
+uvicorn>=0.29,<1
+python-multipart>=0.0.9,<1
+ruamel.yaml>=0.18,<1

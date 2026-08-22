@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .client import BookingError, EbusyClient, FlowStuckError, LoginError
-from .config import AppConfig
+from .config import AppConfig, load_config
 from .notify import notify
 
 logger = logging.getLogger("padel_booker.scheduler")
@@ -45,7 +45,7 @@ def _mark_booked(cfg: AppConfig, run_key: str) -> None:
     _state_file(cfg).write_text(run_key, encoding="utf-8")
 
 
-def run_forever(cfg: AppConfig) -> None:
+def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
     client = EbusyClient(
         base_url=cfg.credentials.base_url,
         username=cfg.credentials.username,
@@ -63,6 +63,13 @@ def run_forever(cfg: AppConfig) -> None:
     )
 
     while True:
+        try:
+            cfg = load_config(config_path)
+        except Exception:
+            logger.exception(
+                "Konnte config.yaml nicht neu einlesen - verwende vorherigen Stand weiter."
+            )
+
         now = _now()
 
         if not _in_search_window(cfg, now):

@@ -12,6 +12,7 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_USER="$(whoami)"
 SERVICE_FILE="/etc/systemd/system/padel-booking.service"
+UI_SERVICE_FILE="/etc/systemd/system/padel-booking-ui.service"
 
 echo "==> App-Verzeichnis: ${APP_DIR}"
 echo "==> Dienst läuft als Benutzer: ${APP_USER}"
@@ -32,19 +33,26 @@ if [ ! -f "${APP_DIR}/.env" ]; then
   echo "    WICHTIG: ${APP_DIR}/.env jetzt mit echten Zugangsdaten befüllen!"
 fi
 
-echo "==> Installiere systemd-Service nach ${SERVICE_FILE}"
+echo "==> Installiere systemd-Services nach /etc/systemd/system/"
 sed \
   -e "s|__APP_DIR__|${APP_DIR}|g" \
   -e "s|__APP_USER__|${APP_USER}|g" \
   "${APP_DIR}/deploy/padel-booking.service" | sudo tee "${SERVICE_FILE}" >/dev/null
+sed \
+  -e "s|__APP_DIR__|${APP_DIR}|g" \
+  -e "s|__APP_USER__|${APP_USER}|g" \
+  "${APP_DIR}/deploy/padel-booking-ui.service" | sudo tee "${UI_SERVICE_FILE}" >/dev/null
 
 sudo systemctl daemon-reload
 sudo systemctl enable padel-booking
+sudo systemctl enable padel-booking-ui
 
 echo ""
 echo "==> Fertig. Nächste Schritte:"
-echo "    1. ${APP_DIR}/.env ausfüllen (falls noch nicht geschehen)"
+echo "    1. ${APP_DIR}/.env ausfüllen (falls noch nicht geschehen), inkl. UI_USERNAME/UI_PASSWORD"
 echo "    2. ${APP_DIR}/config.yaml auf den gewünschten Ziel-Slot prüfen"
 echo "    3. Test:   ${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py test-login"
 echo "    4. Start:  sudo systemctl start padel-booking"
 echo "    5. Logs:   journalctl -u padel-booking -f"
+echo "    6. Web-UI: sudo systemctl start padel-booking-ui (danach Port 8080 in der"
+echo "               OCI Security List freigeben, siehe README)"

@@ -123,9 +123,40 @@ Anlage unregelmäßig ist — außerhalb des Fensters prüft das Skript nur
 träge alle `polling.idle_check_seconds`, ob das Fenster begonnen hat;
 innerhalb pollt es alle `polling.interval_seconds` (Standard: 3s).
 
-**Nach jeder Änderung:** committen, pushen — der GitHub-Actions-Workflow
-deployed automatisch auf die VM und startet den Dienst neu (siehe unten).
-Alternativ lokal auf der VM `git pull && sudo systemctl restart padel-booking`.
+**Nach jeder Änderung (per SSH/Git):** committen, pushen — der GitHub-Actions-
+Workflow deployed automatisch auf die VM (siehe unten). Alternativ lokal auf
+der VM `git pull`. Ein Neustart des Dienstes ist **nicht** nötig — der
+Scheduler liest `config.yaml` bei jedem Durchlauf neu ein.
+
+### Alternative: Web-Oberfläche statt SSH
+
+Für die wöchentliche Anpassung ohne Terminal gibt es eine schlanke,
+passwortgeschützte Weboberfläche (`main.py serve-ui`), erreichbar unter
+`http://<Public-IP-der-VM>:8080`. Sie bearbeitet dieselbe `config.yaml`
+direkt auf der VM (inkl. Erhalt der Kommentare) — der laufende Buchungs-
+Dienst übernimmt Änderungen automatisch, ganz ohne Git/SSH/Neustart.
+
+Voraussetzungen einmalig einrichten:
+
+1. In `.env` (auf der VM) `UI_USERNAME` und `UI_PASSWORD` setzen — ein
+   eigenes, starkes Passwort, **nicht** dein eBuSy-Passwort wiederverwenden.
+2. Port **8080** in der OCI Security List freigeben (analog zu Port 22 in
+   Schritt 4 der VM-Einrichtung unten: Ingress-Regel, Source `0.0.0.0/0`,
+   TCP, Port 8080).
+3. `sudo systemctl start padel-booking-ui` (der Dienst wird von
+   `install.sh` bereits mit angelegt, siehe Abschnitt 3).
+
+Dann im Browser `http://<Public-IP>:8080` öffnen, mit `UI_USERNAME`/
+`UI_PASSWORD` einloggen, Wochentag/Uhrzeit/Suchfenster/Courts/Benach­richtigung
+anpassen, Speichern klicken.
+
+**Sicherheitshinweis:** Die Oberfläche läuft über einfaches HTTP (kein
+eigenes TLS-Zertifikat, da keine eigene Domain) und ist nur per Basic-Auth
+abgesichert — für den persönlichen Gebrauch ausreichend, aber die Zugangs­daten
+gehen unverschlüsselt über die Leitung. Sie zeigt **nirgends** deine
+eBuSy-Zugangsdaten an, nur die operative Konfiguration (Zielzeit, Suchfenster
+etc.). Falls dir das zu unsicher ist: Port 8080 einfach nicht freigeben und
+bei SSH/`nano config.yaml` bleiben.
 
 ---
 
@@ -239,17 +270,20 @@ externer Dienst nötig.
 ## Projektstruktur
 
 ```
-main.py                        CLI-Einstieg (run / test-login / find-slot / test-booking)
+main.py                        CLI-Einstieg (run / test-login / find-slot / test-booking / serve-ui)
 config.yaml                    Wöchentlich anpassbare Zielkonfiguration
 .env.example                   Vorlage für Zugangsdaten/Secrets (.env wird nicht committet)
 src/padel_booker/
   client.py                    eBuSy-HTTP-Client: Login, Slot-Suche, Buchungs-Flow
   webflow.py                   Parsing-Helfer für den Spring-Web-Flow-Dialog
-  scheduler.py                 Poll-Loop, Zeitfenster-/Wochentagslogik
+  scheduler.py                 Poll-Loop, Zeitfenster-/Wochentagslogik, liest config.yaml laufend neu
   notify.py                    Log- und optionale E-Mail-Benachrichtigung
-  config.py                    Laden von config.yaml + .env
+  config.py                    Laden von config.yaml + .env (fürs Booking-Skript)
+  config_io.py                 Kommentar-erhaltendes Lesen/Schreiben von config.yaml (fürs Web-UI)
+  web.py                       Passwortgeschützte Web-Oberfläche zum Anpassen des Ziel-Slots
 deploy/
-  padel-booking.service        systemd-Unit-Vorlage
+  padel-booking.service        systemd-Unit-Vorlage (Booking-Dienst)
+  padel-booking-ui.service     systemd-Unit-Vorlage (Web-Oberfläche, Port 8080)
   install.sh                   Einmaliges VM-Setup
   redeploy.sh                  Wird von GitHub Actions (oder manuell) für Updates genutzt
 .github/workflows/deploy.yml   Auto-Deploy auf die VM bei Push auf main

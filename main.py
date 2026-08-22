@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -22,7 +23,24 @@ def _setup_logging(verbose: bool) -> None:
 
 def cmd_run(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
-    run_forever(cfg)
+    run_forever(cfg, config_path=args.config)
+    return 0
+
+
+def cmd_serve_ui(args: argparse.Namespace) -> int:
+    import uvicorn
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    if not os.environ.get("UI_USERNAME") or not os.environ.get("UI_PASSWORD"):
+        print(
+            "UI_USERNAME/UI_PASSWORD fehlen in .env - bitte setzen, bevor die "
+            "Weboberflaeche gestartet wird (siehe .env.example)."
+        )
+        return 1
+
+    os.environ["PADEL_CONFIG_PATH"] = args.config
+    uvicorn.run("src.padel_booker.web:app", host="0.0.0.0", port=args.port, log_level="info")
     return 0
 
 
@@ -149,6 +167,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--confirm", action="store_true", help="Tatsaechlich buchen (sonst nur Trockenlauf)"
     )
     p_test.set_defaults(func=cmd_test_booking)
+
+    p_ui = sub.add_parser(
+        "serve-ui", help="Startet die Web-Oberflaeche zum Anpassen des Ziel-Slots"
+    )
+    p_ui.add_argument("--port", type=int, default=8080, help="Port fuer die Weboberflaeche")
+    p_ui.set_defaults(func=cmd_serve_ui)
 
     return parser
 
