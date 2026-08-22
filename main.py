@@ -62,20 +62,21 @@ def cmd_find_slot(args: argparse.Namespace) -> int:
     client.login()
 
     target_date = datetime.now(BERLIN_TZ) + timedelta(days=BOOKING_HORIZON_DAYS)
-    slot = client.find_bookable_slot(
+    slots = client.find_bookable_slots(
         target_date=target_date.date(),
         target_time=cfg.target.time,
         preferred_courts=cfg.target.courts,
     )
-    if slot is None:
+    if not slots:
         print(
             f"Kein buchbarer Slot fuer {target_date.date()} {cfg.target.time} "
             f"(Courts {cfg.target.courts}) gefunden."
         )
         return 1
 
-    requested_end = add_minutes(slot.begin, cfg.target.duration_minutes)
-    print(f"Buchbarer Slot gefunden: Court {slot.court}, {slot.date_us} {slot.begin}-{requested_end}")
+    for slot in slots:
+        requested_end = add_minutes(slot.begin, cfg.target.duration_minutes)
+        print(f"Buchbarer Slot gefunden: Court {slot.court}, {slot.date_us} {slot.begin}-{requested_end}")
     return 0
 
 
@@ -94,14 +95,15 @@ def cmd_test_booking(args: argparse.Namespace) -> int:
     client.login()
 
     target_date = datetime.now(BERLIN_TZ) + timedelta(days=BOOKING_HORIZON_DAYS)
-    slot = client.find_bookable_slot(
+    slots = client.find_bookable_slots(
         target_date=target_date.date(),
         target_time=cfg.target.time,
         preferred_courts=cfg.target.courts,
     )
-    if slot is None:
+    if not slots:
         print("Kein passender freier Slot gefunden - Test kann jetzt nicht laufen.")
         return 1
+    slot = slots[0]
 
     requested_end = add_minutes(slot.begin, cfg.target.duration_minutes)
     print(f"Gefundener Slot: Court {slot.court}, {slot.date_us} {slot.begin}-{requested_end}")

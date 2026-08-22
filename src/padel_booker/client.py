@@ -147,9 +147,12 @@ class EbusyClient:
     # Slot-Suche
     # ------------------------------------------------------------------ #
 
-    def find_bookable_slot(
+    def find_bookable_slots(
         self, target_date: date, target_time: time, preferred_courts: list[int]
-    ) -> Slot | None:
+    ) -> list[Slot]:
+        """Returns bookable slots matching target_time, ordered by the caller's
+        court preference - so on a collision the next-preferred court can be
+        tried without a fresh page fetch."""
         date_str = target_date.strftime("%m/%d/%Y")
         resp = self.session.get(
             self._url("/padel"),
@@ -185,10 +188,7 @@ class EbusyClient:
                 begin=cell.get("data-major-begin", target_str),
             )
 
-        for court in preferred_courts:
-            if court in matches:
-                return matches[court]
-        return None
+        return [matches[court] for court in preferred_courts if court in matches]
 
     # ------------------------------------------------------------------ #
     # Buchungs-Flow (Spring Web Flow)

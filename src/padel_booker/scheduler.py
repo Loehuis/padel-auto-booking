@@ -14,6 +14,12 @@ logger = logging.getLogger("padel_booker.scheduler")
 BERLIN_TZ = ZoneInfo("Europe/Berlin")
 BOOKING_HORIZON_DAYS = 7
 
+# After this many consecutive rejections (collision / any BookingError) for
+# the same target slot, stop hammering the site and wait for next week's
+# run instead of polling every interval_seconds until the search window
+# closes.
+MAX_CONSECUTIVE_REJECTIONS = 5
+
 
 def _now() -> datetime:
     return datetime.now(BERLIN_TZ)
@@ -62,6 +68,9 @@ def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
         cfg.search_window.end_time,
     )
 
+    rejection_counts: dict[str, int] = {}
+    gave_up_run_keys: set[str] = set()
+
     while True:
         try:
             cfg = load_config(config_path)
@@ -79,12 +88,12 @@ def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
         target_date = _target_date(now)
         run_key = f"{target_date.date().isoformat()}_{cfg.target.time}"
 
-        if _already_booked_today_run(cfg, run_key):
+        if _already_booked_today_run(cfg, run_key) or run_key in gave_up_run_keys:
             time_module.sleep(cfg.polling.idle_check_seconds)
             continue
 
         try:
-            success = attempt_booking(client, cfg, target_date, run_key)
+            outcome = attempt_booking(client, cfg, target_date, run_key)
         except LoginError as exc:
             logger.error("Login-Fehler: %s", exc)
             notify(
@@ -96,72 +105,102 @@ def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
             time_module.sleep(cfg.polling.idle_check_seconds)
             continue
 
-        if success:
+        if outcome == "success":
             time_module.sleep(cfg.polling.idle_check_seconds)
-        else:
+        elif outcome == "not_yet":
             time_module.sleep(cfg.polling.interval_seconds)
+        elif outcome == "rejected":
+            rejection_counts[run_key] = rejection_counts.get(run_key, 0) + 1
+            if rejection_counts[run_key] >= MAX_CONSECUTIVE_REJECTIONS:
+                logger.warning(
+                    "Slot fuer %s war %d mal in Folge abgelehnt (alle praeferierten "
+                    "Courts) - gebe fuer diese Woche auf, versuche es naechste Woche "
+                    "wieder.",
+                    run_key,
+                    rejection_counts[run_key],
+                )
+                notify(
+                    cfg.notification,
+                    cfg.smtp,
+                    "Padel-Buchung: fuer diese Woche aufgegeben",
+                    f"Slot fuer {run_key} war {rejection_counts[run_key]}x in Folge "
+                    "belegt/abgelehnt (alle konfigurierten Courts). Versuche es "
+                    "naechste Woche automatisch wieder.",
+                )
+                gave_up_run_keys.add(run_key)
+                time_module.sleep(cfg.polling.idle_check_seconds)
+            else:
+                time_module.sleep(cfg.polling.interval_seconds)
+        else:  # "error" - structural problem, already notified inside attempt_booking
+            time_module.sleep(cfg.polling.idle_check_seconds)
 
 
-def attempt_booking(client: EbusyClient, cfg: AppConfig, target_date: datetime, run_key: str) -> bool:
+def attempt_booking(client: EbusyClient, cfg: AppConfig, target_date: datetime, run_key: str) -> str:
+    """Returns one of: "success", "not_yet", "rejected", "error"."""
     client.ensure_logged_in()
 
-    slot = client.find_bookable_slot(
+    slots = client.find_bookable_slots(
         target_date=target_date.date(),
         target_time=cfg.target.time,
         preferred_courts=cfg.target.courts,
     )
-    if slot is None:
+    if not slots:
         logger.debug("Slot noch nicht buchbar (%s).", run_key)
-        return False
+        return "not_yet"
 
-    requested_end = add_minutes(slot.begin, cfg.target.duration_minutes)
-    logger.info(
-        "Freier Slot gefunden: Court %s, %s %s-%s (angefragte Dauer: %d Min). "
-        "Versuche zu buchen...",
-        slot.court,
-        slot.date_us,
-        slot.begin,
-        requested_end,
-        cfg.target.duration_minutes,
-    )
-
-    try:
-        result = client.book_slot(
-            slot=slot,
-            duration_minutes=cfg.target.duration_minutes,
-            all_courts=cfg.target.courts,
+    last_rejection_reason = ""
+    for slot in slots:
+        requested_end = add_minutes(slot.begin, cfg.target.duration_minutes)
+        logger.info(
+            "Freier Slot gefunden: Court %s, %s %s-%s (angefragte Dauer: %d Min). "
+            "Versuche zu buchen...",
+            slot.court,
+            slot.date_us,
+            slot.begin,
+            requested_end,
+            cfg.target.duration_minutes,
         )
-    except FlowStuckError as exc:
-        logger.error("Buchungs-Flow feststeckt: %s", exc)
+
+        try:
+            result = client.book_slot(
+                slot=slot,
+                duration_minutes=cfg.target.duration_minutes,
+                all_courts=cfg.target.courts,
+            )
+        except FlowStuckError as exc:
+            logger.error("Buchungs-Flow feststeckt: %s", exc)
+            notify(
+                cfg.notification,
+                cfg.smtp,
+                "Padel-Buchung: Flow-Logik muss geprueft werden",
+                f"{exc}\n\nSlot: Court {slot.court}, {slot.date_us} {slot.begin}-{requested_end}\n"
+                "Der Buchungsdialog der Seite hat sich vermutlich geaendert. "
+                "Bitte manuell im Browser buchen und das Skript anpassen.",
+            )
+            return "error"
+        except BookingError as exc:
+            logger.warning(
+                "Buchung fuer Court %s abgelehnt: %s", slot.court, exc.reason
+            )
+            last_rejection_reason = exc.reason
+            continue
+
+        logger.info("Buchung erfolgreich: %s", result)
+        _mark_booked(cfg, run_key)
         notify(
             cfg.notification,
             cfg.smtp,
-            "Padel-Buchung: Flow-Logik muss geprueft werden",
-            f"{exc}\n\nSlot: Court {slot.court}, {slot.date_us} {slot.begin}-{requested_end}\n"
-            "Der Buchungsdialog der Seite hat sich vermutlich geaendert. "
-            "Bitte manuell im Browser buchen und das Skript anpassen.",
+            "Padel-Buchung: Erfolg!",
+            f"Court {slot.court} am {slot.date_us}, {slot.begin}-{requested_end} Uhr gebucht.\n{result}",
         )
-        return False
-    except BookingError as exc:
-        logger.warning("Buchung abgelehnt: %s", exc.reason)
-        notify(
-            cfg.notification,
-            cfg.smtp,
-            "Padel-Buchung: fehlgeschlagen",
-            f"Grund: {exc.reason}\nSlot: Court {slot.court}, {slot.date_us} "
-            f"{slot.begin}-{requested_end}",
-        )
-        return False
+        return "success"
 
-    logger.info("Buchung erfolgreich: %s", result)
-    _mark_booked(cfg, run_key)
-    notify(
-        cfg.notification,
-        cfg.smtp,
-        "Padel-Buchung: Erfolg!",
-        f"Court {slot.court} am {slot.date_us}, {slot.begin}-{requested_end} Uhr gebucht.\n{result}",
+    logger.warning(
+        "Alle praeferierten Courts fuer %s abgelehnt (letzter Grund: %s).",
+        run_key,
+        last_rejection_reason,
     )
-    return True
+    return "rejected"
 
 
 _WEEKDAY_NAMES = [
