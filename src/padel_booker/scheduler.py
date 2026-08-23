@@ -72,7 +72,13 @@ def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
         cfg.search_window.end_time,
     )
 
-    rejection_counts: dict[str, int] = {}
+    # Per (run_key, court) rejection counters, so one court's confirmed
+    # collision doesn't stop retrying another court that's merely "not yet"
+    # (e.g. still hitting the 7-day-advance check moments before the real
+    # unlock). A run_key is only fully given up on once every configured
+    # court has individually crossed its own threshold.
+    rejection_counts: dict[tuple[str, int], int] = {}
+    gave_up_courts: dict[str, set[int]] = {}
     gave_up_run_keys: set[str] = set()
     logged_unlock_keys: set[str] = set()
 
@@ -97,8 +103,14 @@ def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
             time_module.sleep(cfg.polling.idle_check_seconds)
             continue
 
+        active_courts = [
+            c for c in cfg.target.courts if c not in gave_up_courts.get(run_key, set())
+        ]
+
         try:
-            outcome, all_collisions = attempt_booking(client, cfg, target_date, run_key)
+            outcome, court_errors = attempt_booking(
+                client, cfg, target_date, run_key, active_courts
+            )
         except LoginError as exc:
             logger.error("Login-Fehler: %s", exc)
             notify(
@@ -119,28 +131,45 @@ def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
         elif outcome == "not_yet":
             time_module.sleep(cfg.polling.interval_seconds)
         elif outcome == "rejected":
-            rejection_counts[run_key] = rejection_counts.get(run_key, 0) + 1
-            threshold = (
-                cfg.polling.max_collision_rejections
-                if all_collisions
-                else cfg.polling.max_other_rejections
-            )
-            if rejection_counts[run_key] >= threshold:
+            newly_given_up = []
+            for court, exc in court_errors.items():
+                if exc.is_too_early:
+                    continue  # never counts - just means "not yet", keep retrying
+                key = (run_key, court)
+                rejection_counts[key] = rejection_counts.get(key, 0) + 1
+                threshold = (
+                    cfg.polling.max_collision_rejections
+                    if exc.is_collision
+                    else cfg.polling.max_other_rejections
+                )
+                if rejection_counts[key] >= threshold:
+                    logger.warning(
+                        "Court %s fuer %s war %d mal in Folge abgelehnt (%s) - "
+                        "gebe diesen Court fuer diese Woche auf.",
+                        court,
+                        run_key,
+                        rejection_counts[key],
+                        "bestaetigte Kollision" if exc.is_collision else "unklarer Grund",
+                    )
+                    newly_given_up.append(court)
+
+            if newly_given_up:
+                gave_up_courts.setdefault(run_key, set()).update(newly_given_up)
+
+            remaining_courts = [
+                c for c in cfg.target.courts if c not in gave_up_courts.get(run_key, set())
+            ]
+            if not remaining_courts:
                 logger.warning(
-                    "Slot fuer %s war %d mal in Folge abgelehnt (alle praeferierten "
-                    "Courts, %s) - gebe fuer diese Woche auf, versuche es naechste "
-                    "Woche wieder.",
+                    "Alle Courts fuer %s aufgegeben - versuche es naechste Woche wieder.",
                     run_key,
-                    rejection_counts[run_key],
-                    "bestaetigte Kollision" if all_collisions else "unklarer Grund",
                 )
                 notify(
                     cfg.notification,
                     cfg.smtp,
                     "Padel-Buchung: fuer diese Woche aufgegeben",
-                    f"Slot fuer {run_key} war {rejection_counts[run_key]}x in Folge "
-                    "belegt/abgelehnt (alle konfigurierten Courts). Versuche es "
-                    "naechste Woche automatisch wieder.",
+                    f"Slot fuer {run_key}: alle konfigurierten Courts einzeln "
+                    "belegt/abgelehnt. Versuche es naechste Woche automatisch wieder.",
                 )
                 gave_up_run_keys.add(run_key)
                 time_module.sleep(cfg.polling.idle_check_seconds)
@@ -151,34 +180,35 @@ def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
 
 
 def attempt_booking(
-    client: EbusyClient, cfg: AppConfig, target_date: datetime, run_key: str
-) -> tuple[str, bool]:
-    """Returns (outcome, all_collisions).
+    client: EbusyClient,
+    cfg: AppConfig,
+    target_date: datetime,
+    run_key: str,
+    active_courts: list[int],
+) -> tuple[str, dict[int, BookingError]]:
+    """Returns (outcome, court_errors).
 
-    outcome is one of "success", "not_yet", "rejected", "error". If every
-    rejection across the preferred courts was a "too early" (7-day-rule)
-    response - the calendar can mark a cell bookable slightly before the
-    site's own submission check actually allows it - outcome is "not_yet"
-    rather than "rejected", since that's not a real dead end. all_collisions
-    is only meaningful when outcome == "rejected": True if every rejection
-    across the preferred courts was a confirmed slot collision (safe to give
-    up quickly), False if any rejection had an unclassified reason (be more
-    cautious before giving up for the week).
+    outcome is one of "success", "not_yet", "rejected", "error". court_errors
+    maps each attempted-and-rejected court to its BookingError, so the caller
+    can maintain a per-court backoff counter (a confirmed collision on one
+    court shouldn't stop retrying another court that's merely "not yet"). If
+    every active court's rejection was a "too early" (7-day-rule) response -
+    the calendar can mark a cell bookable slightly before the site's own
+    submission check actually allows it - outcome is "not_yet" rather than
+    "rejected", since that's not a real dead end.
     """
     client.ensure_logged_in()
 
     slots = client.find_bookable_slots(
         target_date=target_date.date(),
         target_time=cfg.target.time,
-        preferred_courts=cfg.target.courts,
+        preferred_courts=active_courts,
     )
     if not slots:
         logger.debug("Slot noch nicht buchbar (%s).", run_key)
-        return "not_yet", False
+        return "not_yet", {}
 
-    last_rejection_reason = ""
-    all_collisions = True
-    all_too_early = True
+    court_errors: dict[int, BookingError] = {}
     for slot in slots:
         requested_end = add_minutes(slot.begin, cfg.target.duration_minutes)
         logger.info(
@@ -207,16 +237,12 @@ def attempt_booking(
                 "Der Buchungsdialog der Seite hat sich vermutlich geaendert. "
                 "Bitte manuell im Browser buchen und das Skript anpassen.",
             )
-            return "error", False
+            return "error", {}
         except BookingError as exc:
             logger.warning(
                 "Buchung fuer Court %s abgelehnt: %s", slot.court, exc.reason
             )
-            last_rejection_reason = exc.reason
-            if not exc.is_collision:
-                all_collisions = False
-            if not exc.is_too_early:
-                all_too_early = False
+            court_errors[slot.court] = exc
             continue
 
         logger.info("Buchung erfolgreich: %s", result)
@@ -227,22 +253,22 @@ def attempt_booking(
             "Padel-Buchung: Erfolg!",
             f"Court {slot.court} am {slot.date_us}, {slot.begin}-{requested_end} Uhr gebucht.\n{result}",
         )
-        return "success", False
+        return "success", {}
 
-    if all_too_early:
+    if all(exc.is_too_early for exc in court_errors.values()):
         logger.debug(
-            "Alle praeferierten Courts fuer %s noch zu frueh (7-Tage-Regel) - "
+            "Alle versuchten Courts fuer %s noch zu frueh (7-Tage-Regel) - "
             "kein echter Ablehnungsgrund, poll weiter.",
             run_key,
         )
-        return "not_yet", False
+        return "not_yet", {}
 
     logger.warning(
-        "Alle praeferierten Courts fuer %s abgelehnt (letzter Grund: %s).",
+        "Court(s) %s fuer %s abgelehnt.",
+        list(court_errors.keys()),
         run_key,
-        last_rejection_reason,
     )
-    return "rejected", all_collisions
+    return "rejected", court_errors
 
 
 _WEEKDAY_NAMES = [
