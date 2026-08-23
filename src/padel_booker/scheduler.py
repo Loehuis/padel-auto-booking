@@ -14,12 +14,6 @@ logger = logging.getLogger("padel_booker.scheduler")
 BERLIN_TZ = ZoneInfo("Europe/Berlin")
 BOOKING_HORIZON_DAYS = 7
 
-# After this many consecutive rejections (collision / any BookingError) for
-# the same target slot, stop hammering the site and wait for next week's
-# run instead of polling every interval_seconds until the search window
-# closes.
-MAX_CONSECUTIVE_REJECTIONS = 5
-
 
 def _now() -> datetime:
     return datetime.now(BERLIN_TZ)
@@ -51,6 +45,16 @@ def _mark_booked(cfg: AppConfig, run_key: str) -> None:
     _state_file(cfg).write_text(run_key, encoding="utf-8")
 
 
+def _log_unlock_observation(cfg: AppConfig, run_key: str, now: datetime, outcome: str) -> None:
+    """Appends a one-line record of when a run_key was first observed as
+    bookable at all (regardless of whether the booking itself then succeeded),
+    to build empirical data on the actual unlock time across weeks."""
+    cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    log_file = cfg.state_dir / "unlock_observations.csv"
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(f"{now.isoformat()},{run_key},{outcome}\n")
+
+
 def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
     client = EbusyClient(
         base_url=cfg.credentials.base_url,
@@ -70,6 +74,7 @@ def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
 
     rejection_counts: dict[str, int] = {}
     gave_up_run_keys: set[str] = set()
+    logged_unlock_keys: set[str] = set()
 
     while True:
         try:
@@ -93,7 +98,7 @@ def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
             continue
 
         try:
-            outcome = attempt_booking(client, cfg, target_date, run_key)
+            outcome, all_collisions = attempt_booking(client, cfg, target_date, run_key)
         except LoginError as exc:
             logger.error("Login-Fehler: %s", exc)
             notify(
@@ -105,19 +110,29 @@ def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
             time_module.sleep(cfg.polling.idle_check_seconds)
             continue
 
+        if outcome != "not_yet" and run_key not in logged_unlock_keys:
+            logged_unlock_keys.add(run_key)
+            _log_unlock_observation(cfg, run_key, now, outcome)
+
         if outcome == "success":
             time_module.sleep(cfg.polling.idle_check_seconds)
         elif outcome == "not_yet":
             time_module.sleep(cfg.polling.interval_seconds)
         elif outcome == "rejected":
             rejection_counts[run_key] = rejection_counts.get(run_key, 0) + 1
-            if rejection_counts[run_key] >= MAX_CONSECUTIVE_REJECTIONS:
+            threshold = (
+                cfg.polling.max_collision_rejections
+                if all_collisions
+                else cfg.polling.max_other_rejections
+            )
+            if rejection_counts[run_key] >= threshold:
                 logger.warning(
                     "Slot fuer %s war %d mal in Folge abgelehnt (alle praeferierten "
-                    "Courts) - gebe fuer diese Woche auf, versuche es naechste Woche "
-                    "wieder.",
+                    "Courts, %s) - gebe fuer diese Woche auf, versuche es naechste "
+                    "Woche wieder.",
                     run_key,
                     rejection_counts[run_key],
+                    "bestaetigte Kollision" if all_collisions else "unklarer Grund",
                 )
                 notify(
                     cfg.notification,
@@ -135,8 +150,17 @@ def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
             time_module.sleep(cfg.polling.idle_check_seconds)
 
 
-def attempt_booking(client: EbusyClient, cfg: AppConfig, target_date: datetime, run_key: str) -> str:
-    """Returns one of: "success", "not_yet", "rejected", "error"."""
+def attempt_booking(
+    client: EbusyClient, cfg: AppConfig, target_date: datetime, run_key: str
+) -> tuple[str, bool]:
+    """Returns (outcome, all_collisions).
+
+    outcome is one of "success", "not_yet", "rejected", "error". all_collisions
+    is only meaningful when outcome == "rejected": True if every rejection
+    across the preferred courts was a confirmed slot collision (safe to give
+    up quickly), False if any rejection had an unclassified reason (be more
+    cautious before giving up for the week).
+    """
     client.ensure_logged_in()
 
     slots = client.find_bookable_slots(
@@ -146,9 +170,10 @@ def attempt_booking(client: EbusyClient, cfg: AppConfig, target_date: datetime, 
     )
     if not slots:
         logger.debug("Slot noch nicht buchbar (%s).", run_key)
-        return "not_yet"
+        return "not_yet", False
 
     last_rejection_reason = ""
+    all_collisions = True
     for slot in slots:
         requested_end = add_minutes(slot.begin, cfg.target.duration_minutes)
         logger.info(
@@ -177,12 +202,14 @@ def attempt_booking(client: EbusyClient, cfg: AppConfig, target_date: datetime, 
                 "Der Buchungsdialog der Seite hat sich vermutlich geaendert. "
                 "Bitte manuell im Browser buchen und das Skript anpassen.",
             )
-            return "error"
+            return "error", False
         except BookingError as exc:
             logger.warning(
                 "Buchung fuer Court %s abgelehnt: %s", slot.court, exc.reason
             )
             last_rejection_reason = exc.reason
+            if not exc.is_collision:
+                all_collisions = False
             continue
 
         logger.info("Buchung erfolgreich: %s", result)
@@ -193,14 +220,14 @@ def attempt_booking(client: EbusyClient, cfg: AppConfig, target_date: datetime, 
             "Padel-Buchung: Erfolg!",
             f"Court {slot.court} am {slot.date_us}, {slot.begin}-{requested_end} Uhr gebucht.\n{result}",
         )
-        return "success"
+        return "success", False
 
     logger.warning(
         "Alle praeferierten Courts fuer %s abgelehnt (letzter Grund: %s).",
         run_key,
         last_rejection_reason,
     )
-    return "rejected"
+    return "rejected", all_collisions
 
 
 _WEEKDAY_NAMES = [

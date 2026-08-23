@@ -15,6 +15,12 @@ logger = logging.getLogger("padel_booker.client")
 PADEL_MODULE_ID = 4
 MAX_FLOW_STEPS = 6
 
+# Exact text confirmed live for "someone already holds this slot" rejections
+# (as opposed to e.g. the 7-day-advance-limit message, which reads
+# differently). Used to classify a BookingError so the scheduler can back off
+# quickly on a confirmed collision without needing repeated confirmation.
+_COLLISION_MARKER = "konflikt mit einem bestehenden termin"
+
 
 class LoginError(RuntimeError):
     pass
@@ -25,6 +31,7 @@ class BookingError(RuntimeError):
         super().__init__(reason)
         self.reason = reason
         self.html = html
+        self.is_collision = _COLLISION_MARKER in reason.lower()
 
 
 class FlowStuckError(BookingError):
@@ -160,6 +167,16 @@ class EbusyClient:
             timeout=15,
         )
         resp.raise_for_status()
+        logger.debug(
+            "Kalender-Response Header fuer %s: Cache-Control=%s ETag=%s "
+            "Last-Modified=%s Date=%s Age=%s",
+            date_str,
+            resp.headers.get("Cache-Control"),
+            resp.headers.get("ETag"),
+            resp.headers.get("Last-Modified"),
+            resp.headers.get("Date"),
+            resp.headers.get("Age"),
+        )
 
         soup = BeautifulSoup(resp.text, "html.parser")
         target_str = target_time.strftime("%H:%M")
@@ -182,6 +199,7 @@ class EbusyClient:
             if court not in preferred_courts:
                 continue
 
+            logger.debug("Gematchte Kalenderzelle (Court %s): %s", court, cell)
             matches[court] = Slot(
                 court=court,
                 date_us=cell.get("data-date", date_str),

@@ -33,6 +33,15 @@ polling:
   interval_seconds: 3
   # Prüfintervall AUSSERHALB des search_window, ob das Fenster begonnen hat.
   idle_check_seconds: 30
+  # Nach wie vielen aufeinanderfolgenden BESTAETIGTEN Kollisionen (Slot ist
+  # schon von jemand anderem gebucht, eindeutige Fehlermeldung) für diese
+  # Woche aufgegeben wird. Braucht keine hohe Zahl - ein bestehender Konflikt
+  # löst sich innerhalb desselben Suchfensters nicht von selbst auf.
+  max_collision_rejections: 2
+  # Nach wie vielen aufeinanderfolgenden Ablehnungen mit ANDEREM/unklarem
+  # Grund für diese Woche aufgegeben wird. Vorsichtiger als oben, da die
+  # Ursache weniger eindeutig ist (könnte z.B. ein einmaliger Fehler sein).
+  max_other_rejections: 5
 
 notification:
   # E-Mail-Versand ist optional. Bei false wird nur geloggt (kostenlos,
