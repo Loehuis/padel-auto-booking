@@ -155,7 +155,11 @@ def attempt_booking(
 ) -> tuple[str, bool]:
     """Returns (outcome, all_collisions).
 
-    outcome is one of "success", "not_yet", "rejected", "error". all_collisions
+    outcome is one of "success", "not_yet", "rejected", "error". If every
+    rejection across the preferred courts was a "too early" (7-day-rule)
+    response - the calendar can mark a cell bookable slightly before the
+    site's own submission check actually allows it - outcome is "not_yet"
+    rather than "rejected", since that's not a real dead end. all_collisions
     is only meaningful when outcome == "rejected": True if every rejection
     across the preferred courts was a confirmed slot collision (safe to give
     up quickly), False if any rejection had an unclassified reason (be more
@@ -174,6 +178,7 @@ def attempt_booking(
 
     last_rejection_reason = ""
     all_collisions = True
+    all_too_early = True
     for slot in slots:
         requested_end = add_minutes(slot.begin, cfg.target.duration_minutes)
         logger.info(
@@ -210,6 +215,8 @@ def attempt_booking(
             last_rejection_reason = exc.reason
             if not exc.is_collision:
                 all_collisions = False
+            if not exc.is_too_early:
+                all_too_early = False
             continue
 
         logger.info("Buchung erfolgreich: %s", result)
@@ -221,6 +228,14 @@ def attempt_booking(
             f"Court {slot.court} am {slot.date_us}, {slot.begin}-{requested_end} Uhr gebucht.\n{result}",
         )
         return "success", False
+
+    if all_too_early:
+        logger.debug(
+            "Alle praeferierten Courts fuer %s noch zu frueh (7-Tage-Regel) - "
+            "kein echter Ablehnungsgrund, poll weiter.",
+            run_key,
+        )
+        return "not_yet", False
 
     logger.warning(
         "Alle praeferierten Courts fuer %s abgelehnt (letzter Grund: %s).",

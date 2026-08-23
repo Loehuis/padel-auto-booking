@@ -21,6 +21,14 @@ MAX_FLOW_STEPS = 6
 # quickly on a confirmed collision without needing repeated confirmation.
 _COLLISION_MARKER = "konflikt mit einem bestehenden termin"
 
+# Confirmed live: the calendar can mark a cell "bookable" slightly before the
+# site's own submission-time check actually allows it (the real unlock
+# apparently lands at the target slot's own clock time, not a moment before).
+# A rejection with this text just means "not yet, try again shortly" - it
+# should never count toward giving up for the week the way a real collision
+# does.
+_TOO_EARLY_MARKER = "maximal 7 tage im voraus"
+
 
 class LoginError(RuntimeError):
     pass
@@ -31,7 +39,9 @@ class BookingError(RuntimeError):
         super().__init__(reason)
         self.reason = reason
         self.html = html
-        self.is_collision = _COLLISION_MARKER in reason.lower()
+        reason_lower = reason.lower()
+        self.is_collision = _COLLISION_MARKER in reason_lower
+        self.is_too_early = _TOO_EARLY_MARKER in reason_lower
 
 
 class FlowStuckError(BookingError):
