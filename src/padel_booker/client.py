@@ -284,6 +284,10 @@ class EbusyClient:
                 next_resp = self.session.post(
                     flow_url,
                     params={"execution": step.execution, "_eventId": event_id},
+                    data={
+                        "purchaseTemplate.comment": "",
+                        self._csrf_param: self._csrf_token,
+                    },
                     headers=self._auth_headers(),
                     timeout=15,
                     allow_redirects=True,
@@ -332,13 +336,11 @@ class EbusyClient:
             )
         return f"Buchungs-Flow abgeschlossen, Endseite: {final_url}"
 
-# "next" is the one _eventId confirmed by the manual browser analysis (used
-# for the details->confirmation transition). Spring Web Flow wizards very
-# commonly reuse the same event name for every "Weiter"-style transition in
-# a linear flow, so it is tried first at every step, including the final
-# confirm - if that assumption is wrong for the last step, these generic
-# names are tried next before giving up.
-_STATIC_FALLBACK_EVENTS = ["next", "confirm", "submit", "finish", "book", "save"]
+# "next" (details -> confirmation) and "commit" (confirmation -> final
+# booking) are both confirmed live via manual browser capture, including a
+# real successful booking (Buchungsnr. 24344). The rest are speculative
+# fallbacks kept in case a future flow step doesn't match either.
+_STATIC_FALLBACK_EVENTS = ["next", "commit", "confirm", "submit", "finish", "book", "save"]
 
 
 def _ordered_candidates(discovered: list[str]) -> list[str]:
