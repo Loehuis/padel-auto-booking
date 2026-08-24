@@ -133,23 +133,23 @@ def run_forever(cfg: AppConfig, config_path: str = "config.yaml") -> None:
         elif outcome == "rejected":
             newly_given_up = []
             for court, exc in court_errors.items():
-                if exc.is_too_early:
-                    continue  # never counts - just means "not yet", keep retrying
+                if exc.is_too_early or exc.is_collision:
+                    # Never counts against give-up: "too early" just means
+                    # not yet unlocked, and a confirmed collision can be a
+                    # temporary hold from someone else's still-open checkout
+                    # ("Bitte schliessen Sie diesen Kauf innerhalb von Minuten
+                    # ab") rather than a permanent booking - it can free up
+                    # again within the same search window, so keep polling.
+                    continue
                 key = (run_key, court)
                 rejection_counts[key] = rejection_counts.get(key, 0) + 1
-                threshold = (
-                    cfg.polling.max_collision_rejections
-                    if exc.is_collision
-                    else cfg.polling.max_other_rejections
-                )
-                if rejection_counts[key] >= threshold:
+                if rejection_counts[key] >= cfg.polling.max_other_rejections:
                     logger.warning(
-                        "Court %s fuer %s war %d mal in Folge abgelehnt (%s) - "
-                        "gebe diesen Court fuer diese Woche auf.",
+                        "Court %s fuer %s war %d mal in Folge mit unklarem "
+                        "Grund abgelehnt - gebe diesen Court fuer diese Woche auf.",
                         court,
                         run_key,
                         rejection_counts[key],
-                        "bestaetigte Kollision" if exc.is_collision else "unklarer Grund",
                     )
                     newly_given_up.append(court)
 

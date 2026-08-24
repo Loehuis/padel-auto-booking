@@ -51,7 +51,6 @@ class SearchWindowConfig:
 class PollingConfig:
     interval_seconds: float
     idle_check_seconds: float
-    max_collision_rejections: int
     max_other_rejections: int
 
 
@@ -113,7 +112,6 @@ def load_config(config_path: str | Path = "config.yaml", env_path: str | Path | 
     polling = PollingConfig(
         interval_seconds=float(polling_raw.get("interval_seconds", 3)),
         idle_check_seconds=float(polling_raw.get("idle_check_seconds", 30)),
-        max_collision_rejections=int(polling_raw.get("max_collision_rejections", 2)),
         max_other_rejections=int(polling_raw.get("max_other_rejections", 5)),
     )
 
