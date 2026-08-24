@@ -167,6 +167,15 @@ class EbusyClient:
             raise LoginError("Kein CSRF-Token vorhanden - erst login() aufrufen.")
         return {self._csrf_header: self._csrf_token}
 
+    def _flow_headers(self) -> dict[str, str]:
+        # Confirmed live for the flow's "next" transition (same AJAX markers
+        # as the login endpoint): without these the site may treat the
+        # request as a plain (non-XHR) navigation and behave differently.
+        headers = self._auth_headers()
+        headers["X-Requested-With"] = "XMLHttpRequest"
+        headers["X-Ajax-Call"] = "true"
+        return headers
+
     def ensure_logged_in(self) -> None:
         if not self._is_authenticated(self._fetch_home()):
             self.login()
@@ -279,23 +288,21 @@ class EbusyClient:
         for _ in range(max_steps):
             tried: list[str] = []
             advanced = False
+            # Resubmit whatever fields the current step's own form actually
+            # renders (confirmed live: the field set differs per step - the
+            # details step needs purchaseTemplate.person/court/repetition.*,
+            # the confirmation step needs purchaseTemplate.comment) - this is
+            # what a real browser does and avoids hardcoding a field set per
+            # view-state.
+            post_data = _extract_form_fields(step.html)
+            post_data[self._csrf_param] = self._csrf_token
             for event_id in _ordered_candidates(step.candidate_event_ids):
                 tried.append(event_id)
-                # The confirmed form body (comment + csrf) was only ever
-                # observed for the final "commit" step. Sending unexpected
-                # fields on earlier steps risks a Spring data-binding error
-                # against a differently-typed model at that view-state, so
-                # keep other steps body-less (their previously working shape).
-                post_data = (
-                    {"purchaseTemplate.comment": "", self._csrf_param: self._csrf_token}
-                    if event_id == "commit"
-                    else None
-                )
                 next_resp = self.session.post(
                     flow_url,
                     params={"execution": step.execution, "_eventId": event_id},
                     data=post_data,
-                    headers=self._auth_headers(),
+                    headers=self._flow_headers(),
                     timeout=15,
                     allow_redirects=True,
                 )
@@ -356,6 +363,41 @@ def _ordered_candidates(discovered: list[str]) -> list[str]:
         if event_id not in ordered:
             ordered.append(event_id)
     return ordered
+
+
+def _extract_form_fields(html: str) -> dict[str, str]:
+    """Collects name->value pairs for every form field present in a Web Flow
+    view, mirroring what a real browser resubmits on the next transition -
+    confirmed live: different steps require different fields (the details
+    step needs purchaseTemplate.person/court/repetition.*, the confirmation
+    step needs purchaseTemplate.comment), so resubmitting whatever the
+    current page actually renders is far more robust than hardcoding a
+    field set per step."""
+    soup = BeautifulSoup(html, "html.parser")
+    fields: dict[str, str] = {}
+
+    for tag in soup.find_all(["input", "textarea", "select"]):
+        name = tag.get("name")
+        if not name:
+            continue
+
+        if tag.name == "textarea":
+            fields[name] = tag.text or ""
+        elif tag.name == "select":
+            selected = tag.find("option", selected=True) or tag.find("option")
+            fields[name] = selected.get("value", "") if selected else ""
+        else:
+            input_type = (tag.get("type") or "text").lower()
+            if input_type in ("submit", "button", "image", "reset"):
+                continue  # the button click itself is expressed via _eventId
+            if input_type in ("checkbox", "radio"):
+                if tag.has_attr("checked"):
+                    fields[name] = tag.get("value", "on")
+                # unchecked boxes/radios are simply omitted, like a real form
+            else:
+                fields[name] = tag.get("value", "")
+
+    return fields
 
 
 def add_minutes(hhmm: str, minutes: int) -> str:
