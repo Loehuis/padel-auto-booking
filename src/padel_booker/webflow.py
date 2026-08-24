@@ -12,6 +12,14 @@ _ALERT_DANGER_PATTERN = re.compile(
 )
 _TAG_PATTERN = re.compile(r"<[^>]+>")
 
+# Confirmed live: a real successful "commit" transition answers 200 OK with
+# no redirect (so the URL/execution-based "did the flow advance" heuristic
+# is useless here - the request URL we sent, execution param included, is
+# echoed back unchanged even on success). The response body instead renders
+# this exact success dialog text - a reliable positive signal independent of
+# URL/execution.
+_SUCCESS_MARKER = "ihre buchung war erfolgreich"
+
 # Buttons/links matching these keywords are navigational dead-ends for our
 # purpose (going back, cancelling) and must never be auto-selected as the
 # "forward" transition, even though they also carry an _eventId.
@@ -87,6 +95,16 @@ def extract_error_message(html: str) -> str | None:
         return None
     text = _TAG_PATTERN.sub(" ", match.group(1))
     return " ".join(text.split()) or None
+
+
+def extract_success_message(html: str) -> str | None:
+    stripped = " ".join(_TAG_PATTERN.sub(" ", html).split())
+    idx = stripped.lower().find(_SUCCESS_MARKER)
+    if idx == -1:
+        return None
+    start = max(0, idx - 40)
+    end = min(len(stripped), idx + len(_SUCCESS_MARKER) + 40)
+    return stripped[start:end].strip()
 
 
 def parse_step(html: str, response_url: str) -> FlowStep:

@@ -8,7 +8,7 @@ from datetime import date, time
 import requests
 from bs4 import BeautifulSoup
 
-from .webflow import parse_step
+from .webflow import extract_success_message, parse_step
 
 logger = logging.getLogger("padel_booker.client")
 
@@ -307,6 +307,17 @@ class EbusyClient:
         final_resp, final_step = self._submit_flow_event(
             flow_url, confirm_step, "commit"
         )
+
+        # Confirmed live: "commit" answers 200 OK with no redirect even on a
+        # real success, so the request URL we sent (execution param
+        # included) is echoed back unchanged - the execution/URL-based
+        # "did the flow advance" heuristic below can't tell success from
+        # stuck for this specific step. Check the positive success-dialog
+        # marker first, before ever consulting that heuristic.
+        success_message = extract_success_message(final_resp.text)
+        if success_message:
+            return f"Buchung erfolgreich bestaetigt: {success_message}"
+
         if final_step.error_message:
             raise BookingError(final_step.error_message, html=final_resp.text)
         if final_step.execution:
