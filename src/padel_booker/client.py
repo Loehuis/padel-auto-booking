@@ -307,7 +307,20 @@ class EbusyClient:
         )
 
         confirm_resp, confirm_step = self._submit_flow_event(
-            flow_url, details_step, "next"
+            flow_url,
+            details_step,
+            "next",
+            # Confirmed live: the details page pre-fills toTime with the
+            # site's minimum slot length (fromTime + 30 Min) regardless of
+            # the "toTime" GET query param we send when starting the flow -
+            # it's presumably a dropdown whose real selection normally
+            # happens client-side via JS after page load, which our static
+            # HTML parse never sees. Force the actually-requested times
+            # instead of trusting the page's default pre-fill.
+            field_overrides={
+                "purchaseTemplate.repetition.fromTime": from_time,
+                "purchaseTemplate.repetition.toTime": end_dt,
+            },
         )
         if confirm_step.error_message:
             raise BookingError(confirm_step.error_message, html=confirm_resp.text)
@@ -360,19 +373,32 @@ class EbusyClient:
 
         return self._finalize(final_step, final_resp.url)
 
-    def _submit_flow_event(self, flow_url: str, step, event_id: str):
+    def _submit_flow_event(
+        self,
+        flow_url: str,
+        step,
+        event_id: str,
+        field_overrides: dict[str, str] | None = None,
+    ):
         """Resubmits the current step's own rendered form fields (mirroring a
         real browser) together with the single confirmed event for this
-        transition. Logs the full raw request/response when the flow exits
-        without a new execution token, lands on a suspicious-looking error
-        URL, and has no recognized error message either, so a failure can be
-        diagnosed from the journal without a fresh live browser capture -
-        deliberately at WARNING, not DEBUG, since the systemd unit runs
-        without --verbose. A real success also exits without an execution
-        token (that's the expected outcome after "commit"), so this is
-        scoped to the error-URL case specifically to avoid logging noise on
-        every successful booking."""
+        transition. `field_overrides` forces specific field values instead of
+        trusting the page's own pre-fill - needed at least for the details
+        step's toTime, which the site always pre-fills with its minimum slot
+        length regardless of what was requested when starting the flow.
+
+        Logs the full raw request/response when the flow exits without a new
+        execution token, lands on a suspicious-looking error URL, and has no
+        recognized error message either, so a failure can be diagnosed from
+        the journal without a fresh live browser capture - deliberately at
+        WARNING, not DEBUG, since the systemd unit runs without --verbose. A
+        real success also exits without an execution token (that's the
+        expected outcome after "commit"), so this is scoped to the
+        error-URL case specifically to avoid logging noise on every
+        successful booking."""
         post_data = _extract_form_fields(step.html)
+        if field_overrides:
+            post_data.update(field_overrides)
         post_data[self._csrf_param] = self._csrf_token
         resp = self.session.post(
             flow_url,
