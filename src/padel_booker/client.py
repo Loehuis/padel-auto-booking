@@ -292,6 +292,20 @@ class EbusyClient:
                 html=resp.text,
             )
 
+        # Diagnose fuer die wiederholt falsche 30-statt-60-Minuten-Dauer:
+        # zeigt, ob die Detailseite unser angefragtes toTime ueberhaupt
+        # korrekt vorausgefuellt hat, bevor wir es (unveraendert) zurueck an
+        # den Server schicken.
+        details_fields = _extract_form_fields(details_step.html)
+        logger.warning(
+            "Details-Schritt vorausgefuellt: fromTime=%s toTime=%s "
+            "(angefragt hatten wir GET fromTime=%s toTime=%s)",
+            details_fields.get("purchaseTemplate.repetition.fromTime"),
+            details_fields.get("purchaseTemplate.repetition.toTime"),
+            from_time,
+            end_dt,
+        )
+
         confirm_resp, confirm_step = self._submit_flow_event(
             flow_url, details_step, "next"
         )
@@ -303,6 +317,15 @@ class EbusyClient:
             # defensive way as the final step in case the site's flow ever
             # collapses details+confirmation into one transition.
             return self._finalize(confirm_step, confirm_resp.url)
+
+        confirm_fields = _extract_form_fields(confirm_step.html)
+        confirm_text = " ".join(BeautifulSoup(confirm_step.html, "html.parser").get_text(" ", strip=True).split())
+        logger.warning(
+            "Bestaetigungs-Schritt: Formularfelder=%s | sichtbarer Text (erste "
+            "600 Zeichen): %.600s",
+            confirm_fields,
+            confirm_text,
+        )
 
         final_resp, final_step = self._submit_flow_event(
             flow_url, confirm_step, "commit"
