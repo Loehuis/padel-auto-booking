@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import secrets
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Form, HTTPException, status
 from fastapi.responses import HTMLResponse
@@ -10,10 +12,13 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from . import config_io
 
 CONFIG_PATH = os.environ.get("PADEL_CONFIG_PATH", "config.yaml")
+BERLIN_TZ = ZoneInfo("Europe/Berlin")
+BOOKING_HORIZON_DAYS = 7
 
 app = FastAPI(title="Padel Booking Config")
 security = HTTPBasic()
 
+# Order matters here: index 0..6 matches Python's date.weekday() (Monday=0).
 WEEKDAY_LABELS = {
     "monday": "Montag",
     "tuesday": "Dienstag",
@@ -23,6 +28,15 @@ WEEKDAY_LABELS = {
     "saturday": "Samstag",
     "sunday": "Sonntag",
 }
+
+
+def _next_target_date(weekday_index: int, today):
+    """Next calendar date on/after today matching weekday_index, plus the
+    booking horizon - i.e. the actual date that would be searched for once
+    this weekday rule next becomes active."""
+    days_ahead = (weekday_index - today.weekday()) % 7
+    next_occurrence = today + timedelta(days=days_ahead)
+    return next_occurrence + timedelta(days=BOOKING_HORIZON_DAYS)
 
 
 def _check_auth(credentials: HTTPBasicCredentials = Depends(security)) -> None:
@@ -41,9 +55,11 @@ def _check_auth(credentials: HTTPBasicCredentials = Depends(security)) -> None:
 
 
 def _render(form: dict, message: str | None = None, error: str | None = None) -> str:
+    today = datetime.now(BERLIN_TZ).date()
     weekday_options = "".join(
-        f'<option value="{w}" {"selected" if form["weekday"] == w else ""}>{label}</option>'
-        for w, label in WEEKDAY_LABELS.items()
+        f'<option value="{w}" {"selected" if form["weekday"] == w else ""}>'
+        f'{label} (→ bucht {_next_target_date(idx, today).strftime("%d.%m.%Y")})</option>'
+        for idx, (w, label) in enumerate(WEEKDAY_LABELS.items())
     )
     court1_checked = "checked" if 1 in form["courts"] else ""
     court2_checked = "checked" if 2 in form["courts"] else ""
