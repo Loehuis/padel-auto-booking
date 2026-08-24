@@ -281,13 +281,20 @@ class EbusyClient:
             advanced = False
             for event_id in _ordered_candidates(step.candidate_event_ids):
                 tried.append(event_id)
+                # The confirmed form body (comment + csrf) was only ever
+                # observed for the final "commit" step. Sending unexpected
+                # fields on earlier steps risks a Spring data-binding error
+                # against a differently-typed model at that view-state, so
+                # keep other steps body-less (their previously working shape).
+                post_data = (
+                    {"purchaseTemplate.comment": "", self._csrf_param: self._csrf_token}
+                    if event_id == "commit"
+                    else None
+                )
                 next_resp = self.session.post(
                     flow_url,
                     params={"execution": step.execution, "_eventId": event_id},
-                    data={
-                        "purchaseTemplate.comment": "",
-                        self._csrf_param: self._csrf_token,
-                    },
+                    data=post_data,
                     headers=self._auth_headers(),
                     timeout=15,
                     allow_redirects=True,
