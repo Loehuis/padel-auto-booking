@@ -13,7 +13,6 @@ from .webflow import parse_step
 logger = logging.getLogger("padel_booker.client")
 
 PADEL_MODULE_ID = 4
-MAX_FLOW_STEPS = 6
 
 # Exact text confirmed live for "someone already holds this slot" rejections
 # (as opposed to e.g. the 7-day-advance-limit message, which reads
@@ -247,9 +246,19 @@ class EbusyClient:
         slot: Slot,
         duration_minutes: int,
         all_courts: list[int],
-        max_steps: int = MAX_FLOW_STEPS,
     ) -> str:
-        """Walks the multi-step Web Flow booking dialog to completion.
+        """Walks the booking dialog through its two confirmed transitions:
+        "next" (details -> confirmation) and "commit" (confirmation -> done).
+
+        Both events and their exact required form fields were confirmed live
+        against two separate real successful bookings. A generic "try several
+        guessed events until the state advances" walker was attempted first,
+        but turned out to be structurally unsafe: Spring Web Flow's
+        `execution` key is single-use - once one request has been made
+        against it, a second request reusing the same key always kills the
+        flow ("Der gewaehlte Vorgang wurde bereits beendet"), regardless of
+        which event is sent. Sending exactly one, known-correct event per
+        step avoids that failure mode entirely.
 
         Returns a human-readable success description. Raises BookingError
         (or FlowStuckError) on failure.
@@ -258,8 +267,9 @@ class EbusyClient:
         end_dt = add_minutes(from_time, duration_minutes)
 
         courts_param = ",".join(str(c) for c in all_courts)
+        flow_url = self._url("/court-single-booking-flow")
         resp = self.session.get(
-            self._url("/court-single-booking-flow"),
+            flow_url,
             params={
                 "module": PADEL_MODULE_ID,
                 "court": slot.court,
@@ -272,90 +282,93 @@ class EbusyClient:
             timeout=15,
         )
         resp.raise_for_status()
-        step = parse_step(resp.text, resp.url)
+        details_step = parse_step(resp.text, resp.url)
 
-        if step.error_message:
-            raise BookingError(step.error_message, html=resp.text)
-        if not step.execution:
+        if details_step.error_message:
+            raise BookingError(details_step.error_message, html=resp.text)
+        if not details_step.execution:
             raise FlowStuckError(
                 "Konnte keinen execution-Status aus der Flow-Startseite lesen.",
                 html=resp.text,
             )
 
-        flow_url = self._url("/court-single-booking-flow")
-        seen_executions: list[str] = [step.execution]
-
-        for _ in range(max_steps):
-            tried: list[str] = []
-            advanced = False
-            # Resubmit whatever fields the current step's own form actually
-            # renders (confirmed live: the field set differs per step - the
-            # details step needs purchaseTemplate.person/court/repetition.*,
-            # the confirmation step needs purchaseTemplate.comment) - this is
-            # what a real browser does and avoids hardcoding a field set per
-            # view-state.
-            post_data = _extract_form_fields(step.html)
-            post_data[self._csrf_param] = self._csrf_token
-            for event_id in _ordered_candidates(step.candidate_event_ids):
-                tried.append(event_id)
-                next_resp = self.session.post(
-                    flow_url,
-                    params={"execution": step.execution, "_eventId": event_id},
-                    data=post_data,
-                    headers=self._flow_headers(),
-                    timeout=15,
-                    allow_redirects=True,
-                )
-                next_resp.raise_for_status()
-                next_step = parse_step(next_resp.text, next_resp.url)
-
-                if next_step.error_message:
-                    raise BookingError(next_step.error_message, html=next_resp.text)
-
-                if not next_step.execution:
-                    # Flow exited (redirected out) without an error - this is
-                    # either a real success or the flow-not-found failure mode
-                    # we've been chasing. Always log the raw ground truth
-                    # (status, final URL, request we sent, response body) so a
-                    # failure can be diagnosed from the journal without a new
-                    # live browser capture - deliberately at WARNING, not
-                    # DEBUG, since the systemd unit runs without --verbose.
-                    logger.warning(
-                        "Flow-Schritt ohne execution-Token zurueckgekommen. "
-                        "Angefragt: %s?execution=%s&_eventId=%s | Gesendete "
-                        "Felder: %s | Antwort: status=%s endg.-URL=%s | "
-                        "Body (erste 4000 Zeichen): %.4000s",
-                        flow_url,
-                        step.execution,
-                        event_id,
-                        post_data,
-                        next_resp.status_code,
-                        next_resp.url,
-                        next_resp.text,
-                    )
-                    # Flow exited (redirected out) without an error -> done.
-                    return self._finalize(next_step, next_resp.url)
-
-                if next_step.execution not in seen_executions:
-                    seen_executions.append(next_step.execution)
-                    step = next_step
-                    resp = next_resp
-                    advanced = True
-                    break
-
-            if not advanced:
-                raise FlowStuckError(
-                    "Flow-Zustand hat sich trotz "
-                    f"{tried} nicht veraendert (Zustand {step.execution}). "
-                    "Vermutlich hat sich die Seite geaendert - bitte manuell "
-                    "im Browser pruefen und Flow-Logik anpassen.",
-                    html=step.html,
-                )
-
-        raise FlowStuckError(
-            f"Buchungs-Flow nach {max_steps} Schritten nicht abgeschlossen.",
-            html=step.html,
+        confirm_resp, confirm_step = self._submit_flow_event(
+            flow_url, details_step, "next"
         )
+        if confirm_step.error_message:
+            raise BookingError(confirm_step.error_message, html=confirm_resp.text)
+        if not confirm_step.execution:
+            # Flow already exited after just one step - not expected for a
+            # real success (that needs "commit" too), but handle it the same
+            # defensive way as the final step in case the site's flow ever
+            # collapses details+confirmation into one transition.
+            return self._finalize(confirm_step, confirm_resp.url)
+
+        final_resp, final_step = self._submit_flow_event(
+            flow_url, confirm_step, "commit"
+        )
+        if final_step.error_message:
+            raise BookingError(final_step.error_message, html=final_resp.text)
+        if final_step.execution:
+            logger.warning(
+                "Unerwarteter dritter Flow-Schritt nach 'commit' (execution=%s) - "
+                "Buchungsdialog hat sich vermutlich geaendert. Body (erste 4000 "
+                "Zeichen): %.4000s",
+                final_step.execution,
+                final_resp.text,
+            )
+            raise FlowStuckError(
+                "Buchungs-Flow nach 'commit' immer noch nicht abgeschlossen "
+                f"(execution={final_step.execution}). Vermutlich hat sich der "
+                "Buchungsdialog geaendert - bitte manuell im Browser pruefen.",
+                html=final_step.html,
+            )
+
+        return self._finalize(final_step, final_resp.url)
+
+    def _submit_flow_event(self, flow_url: str, step, event_id: str):
+        """Resubmits the current step's own rendered form fields (mirroring a
+        real browser) together with the single confirmed event for this
+        transition. Logs the full raw request/response when the flow exits
+        without a new execution token, lands on a suspicious-looking error
+        URL, and has no recognized error message either, so a failure can be
+        diagnosed from the journal without a fresh live browser capture -
+        deliberately at WARNING, not DEBUG, since the systemd unit runs
+        without --verbose. A real success also exits without an execution
+        token (that's the expected outcome after "commit"), so this is
+        scoped to the error-URL case specifically to avoid logging noise on
+        every successful booking."""
+        post_data = _extract_form_fields(step.html)
+        post_data[self._csrf_param] = self._csrf_token
+        resp = self.session.post(
+            flow_url,
+            params={"execution": step.execution, "_eventId": event_id},
+            data=post_data,
+            headers=self._flow_headers(),
+            timeout=15,
+            allow_redirects=True,
+        )
+        resp.raise_for_status()
+        next_step = parse_step(resp.text, resp.url)
+
+        if (
+            not next_step.execution
+            and not next_step.error_message
+            and _looks_like_error_url(resp.url)
+        ):
+            logger.warning(
+                "Flow-Schritt ohne execution-Token zurueckgekommen. "
+                "Angefragt: %s?execution=%s&_eventId=%s | Gesendete Felder: %s | "
+                "Antwort: status=%s endg.-URL=%s | Body (erste 4000 Zeichen): %.4000s",
+                flow_url,
+                step.execution,
+                event_id,
+                post_data,
+                resp.status_code,
+                resp.url,
+                resp.text,
+            )
+        return resp, next_step
 
     def _finalize(self, step, final_url: str) -> str:
         if step.error_message:
@@ -369,20 +382,6 @@ class EbusyClient:
                 html=step.html,
             )
         return f"Buchungs-Flow abgeschlossen, Endseite: {final_url}"
-
-# "next" (details -> confirmation) and "commit" (confirmation -> final
-# booking) are both confirmed live via manual browser capture, including a
-# real successful booking (Buchungsnr. 24344). The rest are speculative
-# fallbacks kept in case a future flow step doesn't match either.
-_STATIC_FALLBACK_EVENTS = ["next", "commit", "confirm", "submit", "finish", "book", "save"]
-
-
-def _ordered_candidates(discovered: list[str]) -> list[str]:
-    ordered: list[str] = []
-    for event_id in ["next"] + discovered + _STATIC_FALLBACK_EVENTS:
-        if event_id not in ordered:
-            ordered.append(event_id)
-    return ordered
 
 
 def _extract_form_fields(html: str) -> dict[str, str]:

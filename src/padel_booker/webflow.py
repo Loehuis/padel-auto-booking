@@ -41,8 +41,10 @@ def find_forward_event_ids(html: str) -> list[str]:
     link elsewhere on the page can't accidentally veto an unrelated "Weiter"
     button. This is only a *hint*: the site builds some of these transitions
     dynamically via jQuery, so absence of a match here does not mean no
-    forward transition exists - callers should combine this with known/likely
-    event names (see client._ordered_candidates)."""
+    forward transition exists. Currently unused by client.book_slot (which
+    sends the two known-correct events "next"/"commit" directly, since
+    probing extra guessed events against an already-used execution key
+    reliably breaks the flow) - kept for diagnostics."""
     soup = BeautifulSoup(html, "html.parser")
     seen: list[str] = []
 
