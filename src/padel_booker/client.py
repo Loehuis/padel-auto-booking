@@ -313,6 +313,26 @@ class EbusyClient:
                     raise BookingError(next_step.error_message, html=next_resp.text)
 
                 if not next_step.execution:
+                    # Flow exited (redirected out) without an error - this is
+                    # either a real success or the flow-not-found failure mode
+                    # we've been chasing. Always log the raw ground truth
+                    # (status, final URL, request we sent, response body) so a
+                    # failure can be diagnosed from the journal without a new
+                    # live browser capture - deliberately at WARNING, not
+                    # DEBUG, since the systemd unit runs without --verbose.
+                    logger.warning(
+                        "Flow-Schritt ohne execution-Token zurueckgekommen. "
+                        "Angefragt: %s?execution=%s&_eventId=%s | Gesendete "
+                        "Felder: %s | Antwort: status=%s endg.-URL=%s | "
+                        "Body (erste 4000 Zeichen): %.4000s",
+                        flow_url,
+                        step.execution,
+                        event_id,
+                        post_data,
+                        next_resp.status_code,
+                        next_resp.url,
+                        next_resp.text,
+                    )
                     # Flow exited (redirected out) without an error -> done.
                     return self._finalize(next_step, next_resp.url)
 
