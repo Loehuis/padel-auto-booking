@@ -29,6 +29,17 @@ _COLLISION_MARKER = "konflikt mit einem bestehenden termin"
 # does.
 _TOO_EARLY_MARKER = "maximal 7 tage im voraus"
 
+# Confirmed live: a Web Flow step can "exit" (no more execution token) by
+# landing on an error/expired-session route with no scraped .alert-danger
+# text at all - e.g. "/flow-not-found". Without this check that was
+# misread as success. Generic enough to catch similar error routes even if
+# the exact path differs from the one observed.
+_ERROR_URL_MARKERS = ("not-found", "notfound", "/error", "?error")
+
+
+def _looks_like_error_url(url: str) -> bool:
+    return any(marker in url.lower() for marker in _ERROR_URL_MARKERS)
+
 
 class LoginError(RuntimeError):
     pass
@@ -311,6 +322,14 @@ class EbusyClient:
     def _finalize(self, step, final_url: str) -> str:
         if step.error_message:
             raise BookingError(step.error_message, html=step.html)
+        if _looks_like_error_url(final_url):
+            raise FlowStuckError(
+                f"Flow endete auf einer verdaechtig aussehenden URL ({final_url}) "
+                "ohne erkennbare Fehlermeldung im HTML - vermutlich eine "
+                "abgelaufene/ungueltige Flow-Session, keine echte Bestaetigung. "
+                "Bitte manuell im Browser pruefen, ob wirklich gebucht wurde.",
+                html=step.html,
+            )
         return f"Buchungs-Flow abgeschlossen, Endseite: {final_url}"
 
 # "next" is the one _eventId confirmed by the manual browser analysis (used
